@@ -1,0 +1,46 @@
+[build-system]
+requires = [
+  "hatchling",
+  "hatch-requirements-txt",
+  "hatch-fancy-pypi-readme>=22.5.0",
+]
+build-backend = "hatchling.build"
+
+[project]
+name = "gradio_sketch"
+version = "0.1.0"
+description = "Archived Gradio Sketch visual app builder, restored from Gradio 5.49.1"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+authors = [{ name = "Gradio Team", email = "gradio-team@huggingface.co" }]
+keywords = [
+  "gradio-custom-component",
+  "gradio-template-Column",
+  "sketch",
+]
+dependencies = ["gradio>=6.0,<7.0"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering",
+  "Topic :: Scientific/Engineering :: Visualization",
+]
+
+[project.scripts]
+gradio-sketch = "gradio_sketch.cli:main"
+
+[project.optional-dependencies]
+dev = ["build", "twine"]
+
+[tool.hatch.build]
+artifacts = ["/backend/gradio_sketch/templates", "*.pyi", "/\\backend\\gradio_sketch\\templates"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["/backend/gradio_sketch"]

@@ -1,0 +1,23 @@
+{
+	"name": "gradio_sketch",
+	"version": "0.1.0",
+	"description": "Gradio Sketch overlay component",
+	"type": "module",
+	"author": "",
+	"license": "Apache-2.0",
+	"private": true,
+	"exports": {
+		".": {
+			"gradio": "./Index.svelte",
+			"svelte": "./Index.svelte"
+		},
+		"./package.json": "./package.json"
+	},
+	"dependencies": {
+		"@gradio/utils": "^0.14.2",
+		"svelte": "^5.48.0"
+	},
+	"devDependencies": {
+		"@gradio/preview": "^0.17.1"
+	}
+}
