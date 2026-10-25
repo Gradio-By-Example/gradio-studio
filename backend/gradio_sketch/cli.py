@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 
-from .run import create
+from .run import SKETCH_CSS, create
 
 
 def launch(app_file: str = "app.py"):
@@ -12,7 +12,7 @@ def launch(app_file: str = "app.py"):
     app_file = os.path.join(os.getcwd(), app_file)
     config_file = os.path.join(os.getcwd(), app_file + ".json")
     print("* Sketch will be saved to: ", app_file)
-    create(app_file, config_file).launch()
+    create(app_file, config_file).launch(css=SKETCH_CSS)
 
 
 def main():

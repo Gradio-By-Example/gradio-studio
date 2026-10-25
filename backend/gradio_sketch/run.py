@@ -7,8 +7,144 @@ import huggingface_hub as hub
 
 import gradio as gr
 import gradio.utils
-from gradio_sketch.sketchbox import SketchBox
 from gradio_sketch.utils import ai, get_header, set_kwarg
+
+SKETCH_CSS = """
+.sketch-tools { gap: 4px !important; flex-wrap: wrap !important; }
+.sketch-tools button {
+  min-width: 0 !important;
+  height: 28px !important;
+  padding: 0 8px !important;
+  font-size: 12px !important;
+}
+.column.sketch-slot {
+  position: relative !important;
+  gap: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  border: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  overflow: visible !important;
+  min-height: 32px;
+}
+.column.sketch-slot::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 1px dashed transparent;
+  border-radius: var(--block-radius);
+  pointer-events: none;
+  z-index: 4;
+}
+.column.sketch-slot:hover::after,
+.column.sketch-slot.active::after {
+  border-color: var(--body-text-color);
+}
+.column.sketch-slot.active::after {
+  border-style: solid;
+}
+.column.sketch-slot > .sketch-hit {
+  position: absolute !important;
+  z-index: 6;
+  width: auto !important;
+  min-width: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  height: 20px !important;
+  font-size: 14px !important;
+  line-height: 18px !important;
+  opacity: 0;
+  pointer-events: none;
+}
+.column.sketch-slot:hover > .sketch-hit,
+.column.sketch-slot.active > .sketch-hit {
+  opacity: 1;
+  pointer-events: auto;
+}
+.column.sketch-slot > .sketch-hit.up,
+.column.sketch-slot > .sketch-hit.down {
+  left: 50%;
+  transform: translateX(-50%);
+  width: 80% !important;
+}
+.column.sketch-slot > .sketch-hit.up { top: -10px; }
+.column.sketch-slot > .sketch-hit.down { bottom: -10px; }
+.column.sketch-slot > .sketch-hit.left,
+.column.sketch-slot > .sketch-hit.right {
+  top: 50%;
+  transform: translateY(-50%);
+  height: 80% !important;
+  width: 20px !important;
+}
+.column.sketch-slot > .sketch-hit.left { left: -10px; }
+.column.sketch-slot > .sketch-hit.right { right: -10px; }
+.column.sketch-slot > .sketch-hit.edit,
+.column.sketch-slot > .sketch-hit.delete {
+  top: 50%;
+  width: 30px !important;
+  height: 30px !important;
+  border-radius: 15px !important;
+}
+.column.sketch-slot > .sketch-hit.edit {
+  left: 50%;
+  transform: translate(calc(-50% - 18px), -50%);
+}
+.column.sketch-slot > .sketch-hit.delete {
+  left: 50%;
+  transform: translate(calc(-50% + 18px), -50%);
+}
+.column.sketch-slot > .sketch-fn {
+  position: absolute !important;
+  inset: 0;
+  z-index: 6;
+  width: auto !important;
+  height: 100% !important;
+  margin: 0 !important;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 28px !important;
+  background: color-mix(in srgb, var(--background-fill-primary), transparent 80%);
+  border-radius: var(--block-radius);
+}
+.column.sketch-slot > .sketch-fn button {
+  min-width: 0 !important;
+  height: 24px !important;
+  padding: 0 8px !important;
+  font-size: 11px !important;
+}
+.sketch-name {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--block-border-color);
+  border-radius: var(--block-radius);
+  background: var(--block-background-fill);
+}
+.sketch-name span {
+  color: var(--body-text-color-subdued);
+  font-style: italic;
+  margin-right: 4px;
+}
+"""
+
+DIRECTION_BUTTONS = (
+    ("up", "↑"),
+    ("down", "↓"),
+    ("left", "←"),
+    ("right", "→"),
+)
+
+
+def tool_button(label, **kwargs):
+    kwargs.setdefault("size", "sm")
+    kwargs.setdefault("min_width", 0)
+    kwargs.setdefault("scale", 0)
+    return gr.Button(label, **kwargs)
 
 
 def create(app_file: str, config_file: str):
@@ -76,6 +212,137 @@ def create(app_file: str, config_file: str):
         if len(i) > 1:
             gp, parent, target = get_box(target, i[1:], parent)
         return gp, parent, target
+
+    def find_component_index(slot, target, prefix=None):
+        if target is None:
+            return None
+        prefix = prefix or []
+        for i, element in enumerate(slot):
+            if element == target:
+                return prefix + [i]
+            if isinstance(element, list):
+                found = find_component_index(element, target, prefix + [i])
+                if found is not None:
+                    return found
+        return None
+
+    def next_add_index(index, direction):
+        index = list(index)
+        if not index:
+            return [0]
+        if len(index) % 2 == 1:
+            if direction == "down":
+                index[-1] += 1
+            elif direction == "left":
+                index.append(0)
+            elif direction == "right":
+                index.append(1)
+        elif direction == "right":
+            index[-1] += 1
+        elif direction == "up":
+            index.append(0)
+        elif direction == "down":
+            index.append(1)
+        return index
+
+    def enter_add_mode(direction, index, _layout, _components, _dependencies):
+        return (
+            _layout,
+            _components,
+            _dependencies,
+            "add_component",
+            next_add_index(index, direction),
+            None,
+        )
+
+    def add_near_current(direction, _layout, _components, _dependencies, _modify_id):
+        index = find_component_index(_layout, _modify_id)
+        if index is None:
+            index = [max(len(_layout) - 1, 0)] if _layout else [0]
+        return enter_add_mode(direction, index, _layout, _components, _dependencies)
+
+    def delete_at(index, _layout, _components, _dependencies):
+        def delete_index(_layout, index):
+            gp, parent, target = get_box(_layout, index)
+            parent.remove(target)
+            if isinstance(target, int):
+                del _components[target]
+            if len(parent) == 0 and len(index) > 1:
+                delete_index(_layout, index[:-1])
+            elif len(parent) == 1 and gp:
+                gp[index[-2]] = parent[0]
+
+        delete_index(_layout, list(index))
+        if len(_layout) == 0:
+            return (
+                _layout,
+                _components,
+                _dependencies,
+                "add_component",
+                [0],
+                None,
+            )
+        return (
+            _layout,
+            _components,
+            _dependencies,
+            "default",
+            [],
+            None,
+        )
+
+    def toggle_fn_role(kind, index, _layout, _components, _dependencies, _modify_id):
+        *_, target = get_box(_layout, index)
+        component_list = _dependencies[_modify_id][1 if kind == "input" else 2]
+        if target in component_list:
+            component_list.remove(target)
+        else:
+            component_list.append(target)
+        return (
+            _layout,
+            _components,
+            _dependencies,
+            "modify_function",
+            None,
+            _modify_id,
+        )
+
+    def toggle_fn_event(event, index, _layout, _components, _dependencies, _modify_id):
+        *_, target = get_box(_layout, index)
+        triggers = _dependencies[_modify_id][0]
+        pair = (target, event)
+        if pair in triggers:
+            triggers.remove(pair)
+        else:
+            triggers.append(pair)
+        return (
+            _layout,
+            _components,
+            _dependencies,
+            "modify_function",
+            None,
+            _modify_id,
+        )
+
+    def render_add_near_buttons():
+        gr.Markdown("### Add another")
+        with gr.Row(elem_classes=["sketch-tools"]):
+            for direction, label in DIRECTION_BUTTONS:
+                tool_button(label).click(
+                    lambda _layout,
+                    _components,
+                    _dependencies,
+                    _modify_id,
+                    direction=direction: add_near_current(
+                        direction,
+                        _layout,
+                        _components,
+                        _dependencies,
+                        _modify_id,
+                    ),
+                    [layout, components, dependencies, modify_id],
+                    [layout, components, dependencies, mode, add_index, modify_id],
+                )
 
     def add_component(
         component, layout, components, dependencies, add_index, new_component_id
@@ -174,7 +441,8 @@ def create(app_file: str, config_file: str):
                     _add_index = [0]
                 if _mode == "default":
                     gr.Markdown("## Placement")
-                    gr.Markdown("Click on a '+' button to add a component.")
+                    gr.Markdown("Use the buttons on a component to add another.")
+                    render_add_near_buttons()
                 if _mode == "add_component":
                     gr.Markdown("## Selection")
                     if len(_components) == 0:
@@ -231,9 +499,8 @@ def create(app_file: str, config_file: str):
                     )
                 if _mode == "modify_component":
                     component_name, kwargs, var_name = _components[_modify_id]
-                    gr.Markdown(
-                        "## Configuration\nHover over a component to add new components when done configuring."
-                    )
+                    gr.Markdown("## Configuration")
+                    render_add_near_buttons()
 
                     var_name_box = gr.Textbox(var_name, label="Variable Name")
 
@@ -263,7 +530,7 @@ def create(app_file: str, config_file: str):
                         arg_box = gr.Textbox(
                             arg_value,
                             label=arg,
-                            info=f"<a href='https://www.gradio.app/docs/gradio/{component_name.lower()}#param-{component_name.lower()}-{arg.lower().replace('_', '-')}' target='_blank'>docs</a>",
+                            info=f"[docs](https://www.gradio.app/docs/gradio/{component_name.lower()}#param-{component_name.lower()}-{arg.lower().replace('_', '-')})",
                         )
 
                         def set_arg(value, arg=arg):
@@ -472,9 +739,141 @@ def create(app_file: str, config_file: str):
             show_progress="hidden",
         )
         def app(_layout, _components, _dependencies, saved, _modify_id, _mode):
-            boxes = []
             rendered_components = {}
             function_mode = _mode == "modify_function"
+            place_inputs = [layout, components, dependencies, modify_id]
+            place_outputs = [
+                layout,
+                components,
+                dependencies,
+                mode,
+                add_index,
+                modify_id,
+            ]
+
+            def attach_item_controls(
+                this_index,
+                can_edit=False,
+                event_list=None,
+                is_input=False,
+                is_output=False,
+                triggers=None,
+            ):
+                if saved:
+                    return
+                if function_mode:
+                    if not can_edit:
+                        return
+                    with gr.Row(elem_classes=["sketch-fn"]):
+                        tool_button(
+                            "input",
+                            variant="primary" if is_input else "secondary",
+                        ).click(
+                            lambda _layout,
+                            _components,
+                            _dependencies,
+                            _modify_id,
+                            this_index=list(this_index): toggle_fn_role(
+                                "input",
+                                this_index,
+                                _layout,
+                                _components,
+                                _dependencies,
+                                _modify_id,
+                            ),
+                            place_inputs,
+                            place_outputs,
+                        )
+                        tool_button(
+                            "output",
+                            variant="primary" if is_output else "secondary",
+                        ).click(
+                            lambda _layout,
+                            _components,
+                            _dependencies,
+                            _modify_id,
+                            this_index=list(this_index): toggle_fn_role(
+                                "output",
+                                this_index,
+                                _layout,
+                                _components,
+                                _dependencies,
+                                _modify_id,
+                            ),
+                            place_inputs,
+                            place_outputs,
+                        )
+                        for event in event_list or []:
+                            selected_event = event in (triggers or [])
+                            tool_button(
+                                f"on:{event}",
+                                variant="primary" if selected_event else "secondary",
+                            ).click(
+                                lambda _layout,
+                                _components,
+                                _dependencies,
+                                _modify_id,
+                                this_index=list(this_index),
+                                event=event: toggle_fn_event(
+                                    event,
+                                    this_index,
+                                    _layout,
+                                    _components,
+                                    _dependencies,
+                                    _modify_id,
+                                ),
+                                place_inputs,
+                                place_outputs,
+                            )
+                    return
+                for direction, _label in DIRECTION_BUTTONS:
+                    tool_button("+", elem_classes=["sketch-hit", direction]).click(
+                        lambda _layout,
+                        _components,
+                        _dependencies,
+                        _modify_id,
+                        direction=direction,
+                        this_index=list(this_index): enter_add_mode(
+                            direction,
+                            this_index,
+                            _layout,
+                            _components,
+                            _dependencies,
+                        ),
+                        place_inputs,
+                        place_outputs,
+                    )
+                if can_edit:
+                    tool_button("✎", elem_classes=["sketch-hit", "edit"]).click(
+                        lambda _layout,
+                        _components,
+                        _dependencies,
+                        _modify_id,
+                        this_index=list(this_index): (
+                            _layout,
+                            _components,
+                            _dependencies,
+                            "modify_component",
+                            None,
+                            get_box(_layout, this_index)[2],
+                        ),
+                        place_inputs,
+                        place_outputs,
+                    )
+                    tool_button("✗", elem_classes=["sketch-hit", "delete"]).click(
+                        lambda _layout,
+                        _components,
+                        _dependencies,
+                        _modify_id,
+                        this_index=list(this_index): delete_at(
+                            this_index,
+                            _layout,
+                            _components,
+                            _dependencies,
+                        ),
+                        place_inputs,
+                        place_outputs,
+                    )
 
             def render_slot(slot, is_column, index, depth=1):
                 container = gr.Column() if is_column else gr.Row()
@@ -487,159 +886,58 @@ def create(app_file: str, config_file: str):
                                     element, not is_column, this_index, depth + 1
                                 )
                             else:
-                                with SketchBox(
-                                    is_container=True, function_mode=function_mode
-                                ) as box:
+                                with gr.Column(elem_classes=["sketch-slot"]):
                                     render_slot(
                                         element, not is_column, this_index, depth + 1
                                     )
-                                boxes.append((box, this_index))
+                                    attach_item_controls(this_index)
                             continue
                         component_name, kwargs, var_name = _components[element]
                         component = get_component_by_name(component_name)
                         if saved:
                             rendered_components[element] = component(**kwargs)
+                            continue
+                        if function_mode:
+                            triggers = [
+                                t
+                                for c, t in _dependencies[_modify_id][0]
+                                if c == element
+                            ]
+                            is_input = element in _dependencies[_modify_id][1]
+                            is_output = element in _dependencies[_modify_id][2]
                         else:
-                            if function_mode:
-                                triggers = [
-                                    t
-                                    for c, t in _dependencies[_modify_id][0]
-                                    if c == element
-                                ]
-                                is_input = element in _dependencies[_modify_id][1]
-                                is_output = element in _dependencies[_modify_id][2]
+                            triggers = []
+                            is_input = False
+                            is_output = False
+                        selected = _modify_id == element and not function_mode
+                        slot_classes = ["sketch-slot"]
+                        if selected:
+                            slot_classes.append("active")
+                        if function_mode:
+                            slot_classes.append("function-mode")
+                        with gr.Column(elem_classes=slot_classes):
+                            if component.__name__ in ("State", "BrowserState"):
+                                gr.HTML(
+                                    "<div class='sketch-name'><span>"
+                                    + component.__name__.lower()
+                                    + ":</span> "
+                                    + var_name
+                                    + "</div>"
+                                )
                             else:
-                                triggers = None
-                                is_input = False
-                                is_output = False
-                            with SketchBox(
-                                component_type=component.__name__.lower(),
-                                var_name=var_name,
-                                active=_modify_id == element and not function_mode,
-                                function_mode=function_mode,
-                                event_list=[str(e) for e in getattr(component, "EVENTS", [])],
+                                rendered_components[element] = component(**kwargs)
+                            attach_item_controls(
+                                this_index,
+                                can_edit=True,
+                                event_list=[
+                                    str(e) for e in getattr(component, "EVENTS", [])
+                                ],
                                 is_input=is_input,
                                 is_output=is_output,
                                 triggers=triggers,
-                            ) as box:
-                                component(**kwargs)
-                            boxes.append((box, this_index))
+                            )
 
             render_slot(_layout, True, [])
-
-            for box, index in boxes:
-
-                def box_action(
-                    _layout,
-                    _components,
-                    _dependencies,
-                    _modify_id,
-                    data: gr.SelectData,
-                    index=index,
-                ):
-                    if data.value in ("up", "down", "left", "right"):
-                        if len(index) % 2 == 1:  # vertical
-                            if data.value == "down":
-                                index[-1] += 1
-                            elif data.value == "left":
-                                index.append(0)
-                            elif data.value == "right":
-                                index.append(1)
-                        elif data.value == "right":
-                            index[-1] += 1
-                        elif data.value == "up":
-                            index.append(0)
-                        elif data.value == "down":
-                            index.append(1)
-                        return (
-                            _layout,
-                            _components,
-                            _dependencies,
-                            "add_component",
-                            index,
-                            None,
-                        )
-                    if data.value == "delete":
-
-                        def delete_index(_layout, index):
-                            gp, parent, target = get_box(_layout, index)
-                            parent.remove(target)
-                            if isinstance(target, int):
-                                del _components[target]
-
-                            if len(parent) == 0 and len(index) > 1:
-                                delete_index(_layout, index[:-1])
-                            elif len(parent) == 1 and gp:
-                                gp[index[-2]] = parent[0]
-
-                        delete_index(_layout, index)
-                        if len(_layout) == 0:
-                            return (
-                                _layout,
-                                _components,
-                                _dependencies,
-                                "add_component",
-                                [0],
-                                None,
-                            )
-                        else:
-                            return (
-                                _layout,
-                                _components,
-                                _dependencies,
-                                "default",
-                                [],
-                                None,
-                            )
-                    if data.value == "modify":
-                        *_, target = get_box(_layout, index)
-                        return (
-                            _layout,
-                            _components,
-                            _dependencies,
-                            "modify_component",
-                            None,
-                            target,
-                        )
-                    if data.value in ["input", "output"]:
-                        *_, target = get_box(_layout, index)
-                        component_list = _dependencies[_modify_id][
-                            1 if data.value == "input" else 2
-                        ]
-                        if target in component_list:
-                            component_list.remove(target)
-                        else:
-                            component_list.append(target)
-                        return (
-                            _layout,
-                            _components,
-                            _dependencies,
-                            "modify_function",
-                            None,
-                            _modify_id,
-                        )
-                    if data.value.startswith("on:"):
-                        *_, target = get_box(_layout, index)
-                        event = data.value[3:]
-                        triggers = _dependencies[_modify_id][0]
-                        if (target, event) in triggers:
-                            triggers.remove((target, event))
-                        else:
-                            triggers.append((target, event))
-                        return (
-                            _layout,
-                            _components,
-                            _dependencies,
-                            "modify_function",
-                            None,
-                            _modify_id,
-                        )
-
-                box.select(
-                    box_action,
-                    [layout, components, dependencies, modify_id],
-                    [layout, components, dependencies, mode, add_index, modify_id],
-                )
 
             if saved:
                 for triggers, inputs, outputs, fn_name, *_, code in _dependencies:
@@ -820,4 +1118,4 @@ demo.launch()"""
 
 if __name__ == "__main__":
     demo = create("app.py", "app.json")
-    demo.launch()
+    demo.launch(css=SKETCH_CSS)
